@@ -51,22 +51,55 @@ jobs:
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
           REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
         run: |
+          echo "# 📥 Data Collection" > $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Source:** ${{ github.event.inputs.data_source || 'news' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Time Range:** Last 1 day" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           python scripts/fetch_data.py \
             --source ${{ github.event.inputs.data_source || 'news' }} \
             --output-dir ./data/raw \
-            --days 1
+            --days 1 2>&1 | tee fetch.log
+
+          # Show fetch summary
+          echo "## Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -d "./data/raw" ]; then
+            FILE_COUNT=$(find ./data/raw -type f | wc -l)
+            TOTAL_SIZE=$(du -sh ./data/raw 2>/dev/null | cut -f1)
+            echo "- Files collected: $FILE_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "- Total size: $TOTAL_SIZE" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
       
       - name: Prepare training data
         id: prepare
         run: |
+          echo "## 🔧 Data Preparation" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
           python scripts/prepare_data.py \
             --input-dir ./data/raw \
             --output-dir ./data/processed
-          
+
           if [ -f "./data/processed/train.bin" ] && [ -f "./data/processed/val.bin" ]; then
             echo "ready=true" >> $GITHUB_OUTPUT
+
+            # Get file sizes
+            TRAIN_SIZE=$(stat -f%z "./data/processed/train.bin" 2>/dev/null || stat -c%s "./data/processed/train.bin")
+            VAL_SIZE=$(stat -f%z "./data/processed/val.bin" 2>/dev/null || stat -c%s "./data/processed/val.bin")
+
+            echo "✅ **Status:** Data preparation successful" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+            echo "| train.bin | $(numfmt --to=iec-i --suffix=B $TRAIN_SIZE 2>/dev/null || echo $TRAIN_SIZE bytes) |" >> $GITHUB_STEP_SUMMARY
+            echo "| val.bin | $(numfmt --to=iec-i --suffix=B $VAL_SIZE 2>/dev/null || echo $VAL_SIZE bytes) |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
             echo "✅ Data preparation successful"
           else
+            echo "❌ **Status:** Data preparation failed" >> $GITHUB_STEP_SUMMARY
             echo "ready=false" >> $GITHUB_OUTPUT
             echo "❌ Data preparation failed"
             exit 1
@@ -87,8 +120,10 @@ jobs:
   train-model:
     needs: fetch-data
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360 # 6 hours
     if: needs.fetch-data.outputs.data-ready == 'true'
+    permissions:
+      contents: write  # Allow pushing to branches
     
     steps:
       - name: Checkout repository
@@ -101,7 +136,7 @@ jobs:
 
       - name: Install PyTorch and dependencies
         run: |
-          pip install torch numpy transformers datasets tiktoken wandb tqdm
+          pip install torch numpy transformers datasets tiktoken wandb tqdm psutil matplotlib
       
       - name: Download training data
         uses: actions/download-artifact@v4
@@ -153,29 +188,632 @@ jobs:
           wandb_run_name = 'finetune-' + str(int(time.time()))
           EOFCONFIG
       
-      - name: Train model
-        id: train
+      - name: Validate environment and data
         run: |
-          python train.py config/finetune_custom.py 2>&1 | tee training.log
-          
-          FINAL_LOSS=$(grep "val loss" training.log | tail -1 | awk '{print $5}')
+          echo "============================================"
+          echo "📋 VIEWING INSTRUCTIONS"
+          echo "============================================"
+          echo "This is the 'train-model' job"
+          echo "Look for the SUMMARY tab/section for this job"
+          echo "(NOT the fetch-data job summary)"
+          echo "============================================"
+          echo ""
+
+          # IMPORTANT: This writes to train-model job's summary (separate from fetch-data)
+          echo "# 🔍 Pre-Training Validation" > $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **📍 You are viewing the train-model job summary**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Job:** train-model" >> $GITHUB_STEP_SUMMARY
+          echo "**Time:** $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Compute Resources
+          echo "## 🖥️  Compute Resources" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Details |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|---------|" >> $GITHUB_STEP_SUMMARY
+
+          # CPU info
+          CPU_CORES=$(python -c "import os; print(os.cpu_count())")
+          echo "| CPU Cores | $CPU_CORES |" >> $GITHUB_STEP_SUMMARY
+
+          # Memory info
+          python << 'EOFPY' >> $GITHUB_STEP_SUMMARY
+          import psutil
+          mem = psutil.virtual_memory()
+          print(f"| Total RAM | {mem.total / (1024**3):.1f} GB |")
+          print(f"| Available RAM | {mem.available / (1024**3):.1f} GB |")
+          EOFPY
+
+          # Disk space
+          DISK_AVAIL=$(df -h . | awk 'NR==2 {print $4}')
+          echo "| Available Disk | $DISK_AVAIL |" >> $GITHUB_STEP_SUMMARY
+
+          # OS/Architecture
+          echo "| OS | $(uname -s) $(uname -m) |" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Software Environment
+          echo "## 📚 Software Environment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Package | Version |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|---------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Python | $(python --version | cut -d' ' -f2) |" >> $GITHUB_STEP_SUMMARY
+          echo "| PyTorch | $(python -c 'import torch; print(torch.__version__)') |" >> $GITHUB_STEP_SUMMARY
+          echo "| NumPy | $(python -c 'import numpy; print(numpy.__version__)') |" >> $GITHUB_STEP_SUMMARY
+
+          # Device info
+          python << 'EOFPY' >> $GITHUB_STEP_SUMMARY
+          import torch
+          if torch.cuda.is_available():
+              print(f"| CUDA | Available (GPU: {torch.cuda.get_device_name(0)}) |")
+          else:
+              print("| Device | CPU only |")
+          EOFPY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Data validation
+          echo "## 📊 Training Data" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f "./data/custom/train.bin" ] && [ -f "./data/custom/val.bin" ]; then
+            TRAIN_SIZE=$(stat -f%z "./data/custom/train.bin" 2>/dev/null || stat -c%s "./data/custom/train.bin")
+            VAL_SIZE=$(stat -f%z "./data/custom/val.bin" 2>/dev/null || stat -c%s "./data/custom/val.bin")
+
+            echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+            echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+            echo "| train.bin | $(numfmt --to=iec-i --suffix=B $TRAIN_SIZE 2>/dev/null || echo $TRAIN_SIZE bytes) |" >> $GITHUB_STEP_SUMMARY
+            echo "| val.bin | $(numfmt --to=iec-i --suffix=B $VAL_SIZE 2>/dev/null || echo $VAL_SIZE bytes) |" >> $GITHUB_STEP_SUMMARY
+
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Status:** All checks passed - ready for training" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status:** Data files missing!" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Run training process
+        id: train
+        env:
+          PYTHONUNBUFFERED: "1"  # Critical: Disable Python output buffering
+        run: |
+          set -x  # Echo all commands for debugging
+
+          # Configure git for metrics updates
+          git config --global user.email "actions@github.com"
+          git config --global user.name "GitHub Actions"
+
+          # Force unbuffered output for all commands
+          stdbuf -oL -eL echo "========================================" || echo "========================================"
+          stdbuf -oL -eL echo "🚀 TRAINING STARTING NOW" || echo "TRAINING STARTING NOW"
+          stdbuf -oL -eL echo "========================================" || echo "========================================"
+          stdbuf -oL -eL echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" || echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo ""
+          echo "📊 Live dashboard: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/dashboard.html"
+          echo "   (or view raw: https://github.com/${{ github.repository }}/blob/master/dashboard.html)"
+          echo ""
+
+          # Write initial step summary IMMEDIATELY
+          cat > $GITHUB_STEP_SUMMARY << 'EOF'
+          # 🎯 Training Execution
+
+          **Status:** 🟢 STARTING NOW
+
+          **Configuration:**
+          - Model: gpt2
+          - Max Iterations: 2000
+          - Device: CPU
+          - Started: Loading...
+
+          **Progress Tracking:**
+          - Console logs show real-time updates (below)
+          - Step summary updates every 20s (refresh to see)
+          - Monitor files being generated
+
+          ---
+
+          ### Current Status
+          ⏳ Initializing training process...
+
+          EOF
+
+          printf "✓ Step summary initialized\n"
+          printf "✓ Configuration: gpt2, 2000 iterations, CPU\n"
+          printf "\n"
+
+          # Show we're really starting
+          printf "Starting training process in 3 seconds...\n"
+          sleep 1
+          printf "2...\n"
+          sleep 1
+          printf "1...\n"
+          sleep 1
+          printf "GO!\n\n"
+
+          # Start training in background with unbuffered output
+          python -u train.py config/finetune_custom.py 2>&1 | stdbuf -oL -eL tee training.log &
+          TRAIN_PID=$!
+
+          printf "✓ Training process LAUNCHED (PID: %d)\n" $TRAIN_PID
+          printf "✓ Training log: training.log\n"
+          printf "\n"
+
+          # Give training time to start and create initial log
+          printf "Waiting for training to generate initial output...\n"
+          for i in {1..10}; do
+            sleep 1
+            printf "."
+            if [ -f training.log ] && [ -s training.log ]; then
+              printf "\n✓ Training log detected!\n"
+              break
+            fi
+          done
+          printf "\n"
+
+          printf "Launching monitoring processes...\n"
+
+          # Start parallel monitors with unbuffered output
+          python -u scripts/monitor_loss_fast.py \
+            --log-file training.log \
+            --output-file fast_monitor.md \
+            --max-iter ${{ env.MAX_ITERS }} \
+            --update-interval 10 &
+          FAST_PID=$!
+          printf "✓ Fast monitor started (PID %d)\n" $FAST_PID
+
+          python -u scripts/monitor_training.py \
+            --log-file training.log \
+            --summary-file detailed_monitor.md \
+            --max-iter ${{ env.MAX_ITERS }} \
+            --update-interval 30 &
+          DETAILED_PID=$!
+          printf "✓ Detailed monitor started (PID %d)\n" $DETAILED_PID
+
+          python -u scripts/monitor_resources.py \
+            --output-file resource_monitor.md \
+            --update-interval 15 &
+          RESOURCE_PID=$!
+          printf "✓ Resource monitor started (PID %d)\n" $RESOURCE_PID
+
+          printf "\n"
+          printf "========================================\n"
+          printf "📊 LIVE PROGRESS TRACKING ACTIVE\n"
+          printf "========================================\n"
+          printf "Updates every 20 seconds in logs below\n"
+          printf "Refresh page to see step summary updates\n"
+          printf "========================================\n"
+          printf "\n"
+
+          # Counter for updates
+          UPDATE_COUNT=0
+
+          # Show immediate first update
+          echo "::notice title=Monitoring Started::Live training dashboard will update every 20 seconds"
+
+          # Live monitoring loop - displays rich formatted output in console logs
+          while kill -0 $TRAIN_PID 2>/dev/null; do
+            sleep 20
+            UPDATE_COUNT=$((UPDATE_COUNT + 1))
+
+            # Use GitHub Actions groups for collapsible sections
+            echo "::group::📊 Training Update #$UPDATE_COUNT - $(date -u '+%H:%M:%S UTC')"
+
+            # Create a formatted dashboard in the logs
+            echo ""
+            echo "╔════════════════════════════════════════════════════════════╗"
+            echo "║          TRAINING DASHBOARD"
+            echo "║          Update #$UPDATE_COUNT at $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            echo "╚════════════════════════════════════════════════════════════╝"
+            echo ""
+
+            # Parse latest metrics from training log
+            if [ -f training.log ]; then
+              LAST_ITER=$(grep -oP 'iter \K\d+' training.log | tail -1)
+              LAST_LOSS=$(grep -oP 'loss \K[\d.]+' training.log | tail -1)
+              LAST_TIME=$(grep -oP 'time \K[\d.]+' training.log | tail -1)
+              LAST_VAL_LOSS=$(grep -oP 'val loss \K[\d.]+' training.log | tail -1)
+
+              # Get CPU and memory stats
+              CPU_PERCENT=$(python3 -c "import psutil; print(psutil.cpu_percent(interval=0.1))" 2>/dev/null || echo "0")
+              MEM_PERCENT=$(python3 -c "import psutil; print(psutil.virtual_memory().percent)" 2>/dev/null || echo "0")
+
+              if [ -n "$LAST_ITER" ]; then
+                PROGRESS=$((LAST_ITER * 100 / 2000))
+                REMAINING=$((2000 - LAST_ITER))
+
+                # Calculate ETA and speed
+                ITER_PER_SEC="N/A"
+                ETA_MIN="N/A"
+                SPEED_STR="N/A"
+                if [ -n "$LAST_TIME" ]; then
+                  ITER_PER_SEC=$(python3 -c "print(f'{1000.0/$LAST_TIME:.2f}')" 2>/dev/null || echo "N/A")
+                  SPEED_STR="${LAST_TIME}ms/iter ($ITER_PER_SEC iter/s)"
+                  if [ "$ITER_PER_SEC" != "N/A" ]; then
+                    ETA_SEC=$(python3 -c "print(int($REMAINING / $ITER_PER_SEC))" 2>/dev/null || echo "0")
+                    ETA_MIN=$((ETA_SEC / 60))
+                  fi
+                fi
+
+                # Create metrics JSON for live dashboard
+                python3 -c "import json; print(json.dumps({
+                  'status': 'running',
+                  'timestamp': '$(date -u '+%Y-%m-%d %H:%M:%S UTC')',
+                  'update_count': $UPDATE_COUNT,
+                  'iteration': ${LAST_ITER:-0},
+                  'max_iter': 2000,
+                  'progress': ${PROGRESS:-0},
+                  'remaining': ${REMAINING:-0},
+                  'train_loss': ${LAST_LOSS:-null},
+                  'val_loss': ${LAST_VAL_LOSS:-null},
+                  'speed': '$SPEED_STR',
+                  'eta': '${ETA_MIN} min',
+                  'cpu_percent': ${CPU_PERCENT:-0},
+                  'mem_percent': ${MEM_PERCENT:-0},
+                  'run_id': '${{ github.run_id }}',
+                  'start_time': '$(date -u '+%Y-%m-%d %H:%M:%S UTC')',
+                  'model': 'gpt2'
+                }, indent=2))" > metrics.json
+
+                # Push to live-metrics branch (force push, no history)
+                if [ -f metrics.json ]; then
+                  echo "📤 Pushing metrics to live-metrics branch..."
+                  
+                  # Save current branch
+                  CURRENT_BRANCH=$(git branch --show-current)
+                  
+                  # Setup authentication with GITHUB_TOKEN
+                  git config --local credential.helper ""
+                  git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n x-access-token:${{ github.token }} | base64)"
+                  
+                  # Create or switch to live-metrics branch
+                  if git rev-parse --verify live-metrics >/dev/null 2>&1; then
+                    git checkout live-metrics 2>&1 || echo "⚠️ Could not checkout existing branch"
+                  else
+                    git checkout --orphan live-metrics 2>&1 || echo "⚠️ Could not create orphan branch"
+                  fi
+                  
+                  # Clear and add only metrics.json
+                  git rm -rf . 2>/dev/null || true
+                  cp metrics.json ./metrics.json
+                  git add metrics.json
+                  
+                  # Commit and push
+                  if git commit -m "Update metrics - iteration ${LAST_ITER:-0} at $(date -u '+%Y-%m-%d %H:%M:%S UTC')" 2>&1; then
+                    if git push -f origin live-metrics 2>&1; then
+                      echo "✅ Metrics pushed successfully!"
+                    else
+                      echo "⚠️ Push failed - check permissions"
+                    fi
+                  else
+                    echo "ℹ️ No changes to commit"
+                  fi
+                  
+                  # Return to original branch
+                  git checkout "$CURRENT_BRANCH" 2>&1 || git checkout - 2>&1 || true
+                else
+                  echo "⚠️ metrics.json not found, skipping push"
+                fi
+
+                # Progress bar
+                FILLED=$((PROGRESS / 2))
+                BAR=$(printf '█%.0s' $(seq 1 $FILLED))
+                EMPTY=$(printf '░%.0s' $(seq 1 $((50 - FILLED))))
+
+                echo "┌─ TRAINING PROGRESS ─────────────────────────────────────┐"
+                echo "│"
+                echo "│  [$BAR$EMPTY] $PROGRESS%"
+                echo "│"
+                echo "│  Iteration:  $LAST_ITER / 2000  ($REMAINING remaining)"
+
+                if [ -n "$LAST_LOSS" ]; then
+                  echo "│  Loss:       $LAST_LOSS"
+                fi
+
+                if [ -n "$LAST_TIME" ]; then
+                  echo "│  Speed:      $SPEED_STR"
+                  if [ "$ETA_MIN" != "N/A" ]; then
+                    echo "│  ETA:        ~${ETA_MIN} minutes"
+                  fi
+                fi
+
+                echo "│"
+                echo "└─────────────────────────────────────────────────────────┘"
+                echo ""
+                echo "📊 Metrics pushed to live-metrics branch (view dashboard)"
+                echo ""
+              fi
+
+              # Show validation losses if available
+              VAL_LOSSES=$(grep -oP 'val loss \K[\d.]+' training.log | tail -5)
+              if [ -n "$VAL_LOSSES" ]; then
+                echo "┌─ RECENT VALIDATION LOSSES ──────────────────────────────┐"
+                echo "│"
+                echo "$VAL_LOSSES" | nl -w2 -s'. ' | sed 's/^/│  /'
+                echo "│"
+                echo "└─────────────────────────────────────────────────────────┘"
+                echo ""
+              fi
+            fi
+
+            # Show resource usage (simple version to avoid YAML issues)
+            echo "┌─ SYSTEM RESOURCES ──────────────────────────────────────┐"
+            echo "│"
+            if [ -f resource_monitor.md ]; then
+              grep -E "(CPU:|Memory:)" resource_monitor.md | head -2 | sed 's/^/│  /'
+            else
+              echo "│  Resource monitor starting..."
+            fi
+            echo "│"
+            echo "└─────────────────────────────────────────────────────────┘"
+
+            echo ""
+            echo "────────────────────────────────────────────────────────────"
+
+            # Close the GitHub Actions group
+            echo "::endgroup::"
+
+            # Add notice for milestones
+            if [ -n "$LAST_ITER" ]; then
+              PROGRESS=$((LAST_ITER * 100 / 2000))
+              if [ $PROGRESS -eq 25 ] || [ $PROGRESS -eq 50 ] || [ $PROGRESS -eq 75 ]; then
+                echo "::notice title=Training Milestone::Reached $PROGRESS% completion ($LAST_ITER/2000 iterations)"
+              fi
+            fi
+
+            echo ""
+
+            # Still write to step summary for post-completion viewing
+            if [ -f fast_monitor.md ] && [ -f detailed_monitor.md ]; then
+              {
+                echo "# 🎯 Training Execution Complete"
+                echo ""
+                echo "**Final Status:** Training finished"
+                echo ""
+                cat fast_monitor.md
+                echo ""
+                echo "---"
+                echo ""
+                cat detailed_monitor.md
+              } > $GITHUB_STEP_SUMMARY
+            fi
+          done
+
+          # Training finished, wait for it to complete
+          wait $TRAIN_PID
+          TRAIN_EXIT_CODE=$?
+
+          # Stop monitors
+          echo "Stopping monitors..." >&2
+          kill $FAST_PID $DETAILED_PID $RESOURCE_PID 2>/dev/null || true
+          sleep 2
+
+          # Check if training succeeded
+          if [ $TRAIN_EXIT_CODE -ne 0 ]; then
+            echo "❌ Training failed with exit code $TRAIN_EXIT_CODE"
+            exit $TRAIN_EXIT_CODE
+          fi
+
+          # Final summary update
+          {
+            echo "# ✅ Training Complete!"
+            echo ""
+            echo "**Configuration:** Model: gpt2 | Max Iterations: 2000 | Device: CPU"
+            echo ""
+            echo "---"
+            echo ""
+
+            # Show final state from monitors
+            if [ -f fast_monitor.md ]; then
+              cat fast_monitor.md
+              echo ""
+              echo "---"
+              echo ""
+            fi
+
+            if [ -f detailed_monitor.md ]; then
+              cat detailed_monitor.md
+            fi
+
+            echo ""
+            echo "---"
+            echo ""
+            echo "**Next:** See subsequent steps for detailed visualizations, metrics analysis, and generated samples."
+
+          } > $GITHUB_STEP_SUMMARY
+
+          # Extract final loss for workflow output
+          FINAL_LOSS=$(python scripts/extract_metrics.py \
+            --log-file training.log \
+            --github-output | grep "final_val_loss" | cut -d'=' -f2)
           echo "final_loss=$FINAL_LOSS" >> $GITHUB_OUTPUT
-          
+
           echo "✅ Training completed. Final validation loss: $FINAL_LOSS"
       
-      - name: Generate samples
+      - name: Analyze training metrics
         run: |
+          # This step focuses on metrics analysis and visualization
+          cat > $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📊 Training Metrics Analysis
+
+          EOF
+
+          # Extract structured metrics
+          python scripts/extract_metrics.py \
+            --log-file training.log \
+            --output-json extracted_metrics.json \
+            --summary
+
+          # Generate PNG visualizations
+          python scripts/create_visualizations.py \
+            --log-file training.log \
+            --output-dir ./
+
+          # Add visual summary with embedded images
+          if [ -f visual_summary.md ]; then
+            cat visual_summary.md >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Also generate text-based metrics
+          python scripts/visualize_metrics.py \
+            --log-file training.log \
+            --output metrics_report.md \
+            --json-output detailed_metrics.json
+
+          # Add text metrics report
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Detailed Text Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          cat metrics_report.md >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate text samples
+        run: |
+          # This step focuses on sample generation
+          cat > $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📝 Generated Text Samples
+
+          Testing the trained model with various prompts to evaluate quality.
+
+          EOF
+
+          # Generate samples with different prompts
+          declare -a prompts=(
+            "Breaking news: "
+            "In a recent study, researchers found that "
+            "The latest technology trends show "
+          )
+
+          for i in "${!prompts[@]}"; do
+            prompt="${prompts[$i]}"
+            echo "## Sample $((i+1)): \"$prompt\"" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+            python sample.py \
+              --out_dir=out-custom \
+              --start="$prompt" \
+              --num_samples=1 \
+              --max_new_tokens=150 \
+              2>/dev/null | tee -a $GITHUB_STEP_SUMMARY
+
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+
+          # Also save all samples to file for artifacts
           python sample.py \
             --out_dir=out-custom \
             --start="Breaking news: " \
-            --num_samples=3 \
+            --num_samples=5 \
             --max_new_tokens=200 \
             > samples.txt
-          
-          echo "📝 Generated samples:"
-          cat samples.txt
-      
-      - name: Upload model checkpoint
+
+          echo "---" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "*All samples saved to artifacts for download*" >> $GITHUB_STEP_SUMMARY
+
+      - name: Package training results
+        run: |
+          # This step creates the comprehensive metrics package
+          cat > $GITHUB_STEP_SUMMARY << 'EOF'
+          # 📦 Training Results Package
+
+          Combining all metrics and creating final report...
+
+          EOF
+
+          python << 'EOFPY'
+          import json
+          from datetime import datetime
+
+          # Load extracted metrics
+          with open('extracted_metrics.json', 'r') as f:
+              extracted = json.load(f)
+
+          # Load detailed metrics
+          with open('detailed_metrics.json', 'r') as f:
+              detailed = json.load(f)
+
+          # Combine into comprehensive metrics
+          metrics = {
+              'timestamp': datetime.utcnow().isoformat(),
+              'run_id': '${{ github.run_id }}',
+              'workflow_run_number': ${{ github.run_number }},
+              'data_source': '${{ github.event.inputs.data_source || 'news' }}',
+              'config': {
+                  'model_size': '${{ env.MODEL_SIZE }}',
+                  'max_iters': ${{ env.MAX_ITERS }},
+                  'python_version': '${{ env.PYTHON_VERSION }}'
+              },
+              'extracted_metrics': extracted['metrics'],
+              'detailed_metrics': detailed['metrics'],
+              'badges': extracted['badges']
+          }
+
+          with open('metrics.json', 'w') as f:
+              json.dump(metrics, f, indent=2)
+
+          # Print summary to console
+          print("=" * 60)
+          print("TRAINING COMPLETE - SUMMARY")
+          print("=" * 60)
+          m = metrics['extracted_metrics']
+          print(f"Iterations: {m['iterations_completed']}")
+          print(f"Final Val Loss: {m['final_val_loss']:.4f}")
+          print(f"Best Val Loss: {m['best_val_loss']:.4f}")
+          if m['avg_iteration_time_ms']:
+              print(f"Avg Iter Time: {m['avg_iteration_time_ms']:.2f}ms")
+          print("=" * 60)
+
+          # Write summary to step summary
+          import os
+          import psutil
+          step_summary = os.environ.get('GITHUB_STEP_SUMMARY', '')
+          if step_summary:
+              with open(step_summary, 'a') as f:
+                  f.write("\n## 📊 Training Results\n\n")
+                  f.write("| Metric | Value |\n")
+                  f.write("|--------|-------|\n")
+                  f.write(f"| Iterations | {m['iterations_completed']:,} |\n")
+                  f.write(f"| Final Val Loss | {m['final_val_loss']:.4f} |\n")
+                  f.write(f"| Best Val Loss | {m['best_val_loss']:.4f} |\n")
+                  if m['avg_iteration_time_ms']:
+                      f.write(f"| Avg Iter Time | {m['avg_iteration_time_ms']:.2f}ms |\n")
+                      # Calculate throughput
+                      iters_per_sec = 1000.0 / m['avg_iteration_time_ms']
+                      f.write(f"| Throughput | {iters_per_sec:.2f} iter/s |\n")
+
+                  f.write("\n## 💻 Compute Efficiency\n\n")
+                  f.write("| Metric | Value |\n")
+                  f.write("|--------|-------|\n")
+
+                  # Get CPU info
+                  cpu_count = os.cpu_count()
+                  f.write(f"| CPU Cores Used | {cpu_count} |\n")
+
+                  # Memory usage
+                  mem = psutil.virtual_memory()
+                  f.write(f"| Peak Memory | {mem.total / (1024**3):.1f} GB available |\n")
+
+                  # Calculate total training time estimate
+                  if m['avg_iteration_time_ms'] and m['iterations_completed']:
+                      total_time_sec = (m['avg_iteration_time_ms'] * m['iterations_completed']) / 1000
+                      hours = int(total_time_sec // 3600)
+                      mins = int((total_time_sec % 3600) // 60)
+                      f.write(f"| Total Time | {hours}h {mins}m |\n")
+
+                      # CPU-hours estimate
+                      cpu_hours = (total_time_sec / 3600) * cpu_count
+                      f.write(f"| CPU-Hours | {cpu_hours:.2f} |\n")
+
+                  f.write("\n✅ **All metrics packaged and ready for download**\n")
+          EOFPY
+
+      - name: Upload training artifacts
         uses: actions/upload-artifact@v4
         with:
           name: model-checkpoint-${{ github.run_id }}
@@ -183,61 +821,150 @@ jobs:
             ./out-custom/ckpt.pt
             ./training.log
             ./samples.txt
+            ./metrics_report.md
+            ./visual_summary.md
+            ./loss_curve.png
+            ./progress.png
           retention-days: 30
-      
-      - name: Save training metrics
-        run: |
-          python << 'EOFPY'
-          import re
-          import json
-          from datetime import datetime
 
-          with open('training.log', 'r') as f:
-              log_content = f.read()
-
-          val_losses = re.findall(r'val loss (\d+\.\d+)', log_content)
-
-          metrics = {
-              'timestamp': datetime.utcnow().isoformat(),
-              'run_id': '${{ github.run_id }}',
-              'final_val_loss': float(val_losses[-1]) if val_losses else None,
-              'iterations': ${{ env.MAX_ITERS }},
-              'model_size': '${{ env.MODEL_SIZE }}'
-          }
-
-          with open('metrics.json', 'w') as f:
-              json.dump(metrics, f, indent=2)
-          EOFPY
-      
       - name: Upload metrics
         uses: actions/upload-artifact@v4
         with:
           name: training-metrics-${{ github.run_id }}
-          path: ./metrics.json
+          path: |
+            ./metrics.json
+            ./extracted_metrics.json
+            ./detailed_metrics.json
           retention-days: 90
 
-  # Stage 3: Evaluate and report
-  evaluate:
+  # Stage 3: Parallel analysis jobs
+  analyze-training:
     needs: train-model
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      
+
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: '*-${{ github.run_id }}'
           path: ./artifacts
-      
-      - name: Generate training report
+
+      - name: Analyze training performance
+        run: |
+          echo "### 🔍 Training Performance Analysis" >> $GITHUB_STEP_SUMMARY
+
+          python << 'EOFPY'
+          import json
+          import os
+
+          # Load metrics
+          with open('./artifacts/training-metrics-${{ github.run_id }}/metrics.json') as f:
+              metrics = json.load(f)
+
+          em = metrics['extracted_metrics']
+          dm = metrics['detailed_metrics']
+
+          # Performance analysis
+          analysis = []
+          analysis.append("## Key Performance Indicators\n")
+
+          # Loss metrics
+          if em['final_val_loss']:
+              final_val = em['final_val_loss']
+              best_val = em['best_val_loss']
+              overfitting = final_val - best_val
+
+              analysis.append(f"**Validation Loss:**")
+              analysis.append(f"- Final: {final_val:.4f}")
+              analysis.append(f"- Best: {best_val:.4f}")
+              analysis.append(f"- Overfitting delta: {overfitting:.4f}")
+
+              if overfitting > 0.5:
+                  analysis.append(f"- ⚠️  WARNING: Significant overfitting detected!")
+              elif overfitting > 0.1:
+                  analysis.append(f"- ℹ️  Mild overfitting observed")
+              else:
+                  analysis.append(f"- ✅ Good generalization")
+
+              analysis.append("")
+
+          # Training efficiency
+          if em['avg_iteration_time_ms']:
+              iter_time = em['avg_iteration_time_ms']
+              total_iters = em['iterations_completed']
+              total_time_sec = (iter_time * total_iters) / 1000
+
+              analysis.append(f"**Training Efficiency:**")
+              analysis.append(f"- Avg iteration time: {iter_time:.2f}ms")
+              analysis.append(f"- Total iterations: {total_iters:,}")
+              analysis.append(f"- Estimated total time: {total_time_sec/3600:.2f} hours")
+              analysis.append("")
+
+          # Validation frequency
+          val_count = em['validation_count']
+          if val_count > 0:
+              analysis.append(f"**Validation:**")
+              analysis.append(f"- Validation runs: {val_count}")
+              analysis.append(f"- Validation frequency: every {total_iters//val_count} iterations")
+              analysis.append("")
+
+          # Recommendations
+          analysis.append("## Recommendations\n")
+
+          if em['final_val_loss']:
+              if em['final_val_loss'] > 3.0:
+                  analysis.append("- 🎯 Consider increasing max_iters or adjusting learning rate")
+              if overfitting > 0.5:
+                  analysis.append("- 🎯 Add regularization or early stopping")
+              if em['final_val_loss'] < 2.0:
+                  analysis.append("- ✅ Excellent performance! Model is well-trained")
+
+          print('\n'.join(analysis))
+
+          # Write to step summary
+          with open(os.environ.get('GITHUB_STEP_SUMMARY', 'summary.md'), 'a') as f:
+              f.write('\n' + '\n'.join(analysis))
+          EOFPY
+
+      - name: Compare with baseline
+        run: |
+          echo "### 📈 Historical Comparison" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Run #${{ github.run_number }} completed" >> $GITHUB_STEP_SUMMARY
+          echo "View all training metrics in artifacts" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+  # Stage 4: Generate final report
+  evaluate:
+    needs: [train-model, analyze-training]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ github.run_id }}'
+          path: ./artifacts
+
+      - name: Generate comprehensive training report
         run: |
           python << 'EOFPY'
           import json
@@ -250,17 +977,50 @@ jobs:
           with open('./artifacts/model-checkpoint-${{ github.run_id }}/samples.txt') as f:
               samples = f.read()
 
+          # Try to load metrics report if available
+          metrics_viz = ""
+          try:
+              with open('./artifacts/model-checkpoint-${{ github.run_id }}/metrics_report.md') as f:
+                  metrics_viz = f.read()
+          except:
+              pass
+
+          em = metrics['extracted_metrics']
+          config = metrics['config']
+
           report = f"""# NanoGPT Training Report
 
-          **Run ID:** {metrics['run_id']}
+          **Run ID:** `{metrics['run_id']}`
+          **Run Number:** #{metrics['workflow_run_number']}
           **Timestamp:** {metrics['timestamp']}
-          **Model:** {metrics['model_size']}
+          **Data Source:** {metrics['data_source']}
+
+          ## Configuration
+
+          | Parameter | Value |
+          |-----------|-------|
+          | Model Size | {config['model_size']} |
+          | Max Iterations | {config['max_iters']:,} |
+          | Python Version | {config['python_version']} |
 
           ## Training Results
 
-          - **Final Validation Loss:** {metrics['final_val_loss']:.4f}
-          - **Iterations:** {metrics['iterations']}
-          - **Data Source:** ${{ github.event.inputs.data_source || 'news' }}
+          | Metric | Value |
+          |--------|-------|
+          | **Iterations Completed** | {em['iterations_completed']:,} |
+          | **Final Training Loss** | {em['final_train_loss']:.4f} |
+          | **Final Validation Loss** | {em['final_val_loss']:.4f} |
+          | **Best Validation Loss** | {em['best_val_loss']:.4f} |
+          | **Avg Iteration Time** | {em['avg_iteration_time_ms']:.2f}ms |
+          | **Validation Runs** | {em['validation_count']} |
+
+          ## Performance Assessment
+
+          {'✅ **GOOD** - Model converged successfully' if em['final_val_loss'] < 3.0 else '⚠️ **NEEDS IMPROVEMENT** - Consider longer training'}
+
+          Overfitting Gap: {em['final_val_loss'] - em['best_val_loss']:.4f} {'(minimal ✅)' if (em['final_val_loss'] - em['best_val_loss']) < 0.1 else '(monitor 📊)'}
+
+          {metrics_viz}
 
           ## Sample Generations
 
@@ -270,16 +1030,32 @@ jobs:
 
           ## Artifacts
 
-          - Model checkpoint saved and available for 30 days
-          - Training log and metrics preserved
-          - Compare with previous runs to track improvement
+          - ✅ Model checkpoint saved (30 days retention)
+          - ✅ Training logs and detailed metrics preserved (90 days)
+          - ✅ Visualizations and analysis reports available
+          - 📊 View full metrics in the training-metrics artifact
+
+          ## Next Steps
+
+          1. Download the model checkpoint from artifacts
+          2. Review the detailed metrics report for loss curves
+          3. Compare with previous runs to track improvements
+          4. Consider adjusting hyperparameters based on performance analysis
 
           ---
           *Generated automatically by GitHub Actions*
+          *Workflow: NanoGPT Daily Training Pipeline*
           """
 
           with open('TRAINING_REPORT.md', 'w') as f:
               f.write(report)
+
+          # Also write to step summary
+          import os
+          step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+          if step_summary:
+              with open(step_summary, 'w') as f:
+                  f.write(report)
 
           print(report)
           EOFPY
