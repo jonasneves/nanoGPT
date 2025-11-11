@@ -122,8 +122,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360 # 6 hours
     if: needs.fetch-data.outputs.data-ready == 'true'
-    permissions:
-      contents: write  # Allow pushing to branches
     
     steps:
       - name: Checkout repository
@@ -292,8 +290,7 @@ jobs:
           stdbuf -oL -eL echo "========================================" || echo "========================================"
           stdbuf -oL -eL echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" || echo "Time: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           echo ""
-          echo "📊 Live dashboard: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/dashboard.html"
-          echo "   (or view raw: https://github.com/${{ github.repository }}/blob/master/dashboard.html)"
+          echo "📊 Progress updates appear below and in the job summary"
           echo ""
 
           # Write initial step summary IMMEDIATELY
@@ -437,66 +434,6 @@ jobs:
                   fi
                 fi
 
-                # Create metrics JSON for live dashboard
-                python3 -c "import json; print(json.dumps({
-                  'status': 'running',
-                  'timestamp': '$(date -u '+%Y-%m-%d %H:%M:%S UTC')',
-                  'update_count': $UPDATE_COUNT,
-                  'iteration': ${LAST_ITER:-0},
-                  'max_iter': 2000,
-                  'progress': ${PROGRESS:-0},
-                  'remaining': ${REMAINING:-0},
-                  'train_loss': ${LAST_LOSS:-null},
-                  'val_loss': ${LAST_VAL_LOSS:-null},
-                  'speed': '$SPEED_STR',
-                  'eta': '${ETA_MIN} min',
-                  'cpu_percent': ${CPU_PERCENT:-0},
-                  'mem_percent': ${MEM_PERCENT:-0},
-                  'run_id': '${{ github.run_id }}',
-                  'start_time': '$(date -u '+%Y-%m-%d %H:%M:%S UTC')',
-                  'model': 'gpt2'
-                }, indent=2))" > metrics.json
-
-                # Push to live-metrics branch (force push, no history)
-                if [ -f metrics.json ]; then
-                  echo "📤 Pushing metrics to live-metrics branch..."
-                  
-                  # Save current branch
-                  CURRENT_BRANCH=$(git branch --show-current)
-                  
-                  # Setup authentication with GITHUB_TOKEN
-                  git config --local credential.helper ""
-                  git config --local http.https://github.com/.extraheader "AUTHORIZATION: basic $(echo -n x-access-token:${{ github.token }} | base64)"
-                  
-                  # Create or switch to live-metrics branch
-                  if git rev-parse --verify live-metrics >/dev/null 2>&1; then
-                    git checkout live-metrics 2>&1 || echo "⚠️ Could not checkout existing branch"
-                  else
-                    git checkout --orphan live-metrics 2>&1 || echo "⚠️ Could not create orphan branch"
-                  fi
-                  
-                  # Clear and add only metrics.json
-                  git rm -rf . 2>/dev/null || true
-                  cp metrics.json ./metrics.json
-                  git add metrics.json
-                  
-                  # Commit and push
-                  if git commit -m "Update metrics - iteration ${LAST_ITER:-0} at $(date -u '+%Y-%m-%d %H:%M:%S UTC')" 2>&1; then
-                    if git push -f origin live-metrics 2>&1; then
-                      echo "✅ Metrics pushed successfully!"
-                    else
-                      echo "⚠️ Push failed - check permissions"
-                    fi
-                  else
-                    echo "ℹ️ No changes to commit"
-                  fi
-                  
-                  # Return to original branch
-                  git checkout "$CURRENT_BRANCH" 2>&1 || git checkout - 2>&1 || true
-                else
-                  echo "⚠️ metrics.json not found, skipping push"
-                fi
-
                 # Progress bar
                 FILLED=$((PROGRESS / 2))
                 BAR=$(printf '█%.0s' $(seq 1 $FILLED))
@@ -521,8 +458,6 @@ jobs:
 
                 echo "│"
                 echo "└─────────────────────────────────────────────────────────┘"
-                echo ""
-                echo "📊 Metrics pushed to live-metrics branch (view dashboard)"
                 echo ""
               fi
 
