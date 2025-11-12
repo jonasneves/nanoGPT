@@ -1,21 +1,21 @@
 name: NanoGPT Daily Training Pipeline
 
-on:
-  schedule:
-    # Run daily at 2 AM UTC
-    - cron: '0 2 * * *'
-  workflow_dispatch:  # Allow manual triggers
-    inputs:
-      data_source:
-        description: 'Data source to scrape'
-        required: false
-        default: 'news'
-        type: choice
-        options:
-          - news
-          - arxiv
-          - reddit
-          - github
+# on:
+#   schedule:
+#     # Run daily at 2 AM UTC
+#     - cron: '0 2 * * *'
+#   workflow_dispatch:  # Allow manual triggers
+#     inputs:
+#       data_source:
+#         description: 'Data source to scrape'
+#         required: false
+#         default: 'news'
+#         type: choice
+#         options:
+#           - news
+#           - arxiv
+#           - reddit
+#           - github
 
 env:
   PYTHON_VERSION: '3.10'
